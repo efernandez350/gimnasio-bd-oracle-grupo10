@@ -261,3 +261,10 @@ BEGIN
   DBMS_OUTPUT.PUT_LINE('Total pagado por cliente 1: ' || fn_total_pagos_cliente(1));
 END;
 /
+
+--Lista todos los procedmientos, funciones, paquetes, vistas y triggers en dos columnas
+SELECT object_name AS "NOMBRE",
+       object_type AS "TIPO"
+FROM user_objects
+WHERE object_type IN ('PROCEDURE', 'FUNCTION', 'PACKAGE', 'PACKAGE BODY', 'VIEW', 'TRIGGER')
+ORDER BY object_type, object_name;
