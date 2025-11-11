@@ -8,10 +8,10 @@
 -- ======================================================
 -- 1. CREACIÓN DEL USUARIO Y CONEXIÓN
 -- ======================================================
-CREATE USER GYM_DB IDENTIFIED BY Gym2025;
-GRANT CONNECT, RESOURCE TO GYM_DB;
-ALTER USER GYM_DB QUOTA UNLIMITED ON USERS;
-CONNECT GYM_DB/Gym2025;
+--CREATE USER GYM_DB IDENTIFIED BY Gym2025;
+--GRANT CONNECT, RESOURCE TO GYM_DB;
+--ALTER USER GYM_DB QUOTA UNLIMITED ON USERS;
+--CONNECT GYM_DB/Gym2025;
 
 -- ======================================================
 -- 2. CREACIÓN DE TABLAS
@@ -74,6 +74,8 @@ CREATE TABLE Log_Pagos (
 -- ======================================================
 -- 3. DATOS DE PRUEBA
 -- ======================================================
+-- Inserciones básicas para validar funcionamiento.
+-- Sirven para probar procedimientos y vistas.
 INSERT INTO Entrenadores (nombre, especialidad, telefono)
 VALUES ('Carlos Gómez', 'Entrenamiento Funcional', '8888-9999');
 
@@ -88,6 +90,10 @@ COMMIT;
 -- ======================================================
 -- 4. PROCEDIMIENTOS ALMACENADOS (CRUD)
 -- ======================================================
+
+-- Estos procedimientos gestionan la tabla Clientes y Pagos.
+-- Se incluyen inserción, actualización, eliminación y listados.
+-- Evitan usar SQL directo desde la aplicación.
 
 CREATE OR REPLACE PROCEDURE sp_insertar_cliente(
   p_nombre IN VARCHAR2,
@@ -151,7 +157,8 @@ END;
 -- ======================================================
 -- 5. FUNCIONES
 -- ======================================================
-
+-- Devuelven valores calculados o agregados.
+-- Son reutilizables desde otros procedimientos o la app.
 CREATE OR REPLACE FUNCTION fn_total_pagos_cliente(p_id_cliente IN NUMBER)
 RETURN NUMBER
 IS
@@ -173,7 +180,8 @@ END;
 -- ======================================================
 -- 6. VISTAS
 -- ======================================================
-
+-- Vistas creadas para reportes y consultas.
+-- Simplifican el acceso a información combinada.
 CREATE OR REPLACE VIEW vw_clientes_membresias AS
 SELECT c.nombre || ' ' || c.apellido AS cliente,
        m.tipo AS membresia,
@@ -191,10 +199,68 @@ JOIN Clientes c ON r.id_cliente = c.id_cliente
 JOIN Entrenadores e ON r.id_entrenador = e.id_entrenador;
 /
 
+-- Vista que muestra clientes que no han realizado pagos
+CREATE OR REPLACE VIEW vw_clientes_sin_pagos AS
+SELECT c.id_cliente, c.nombre, c.apellido
+FROM Clientes c
+WHERE NOT EXISTS (SELECT 1 FROM Pagos p WHERE p.id_cliente=c.id_cliente);
+/
+
+-- Vista con el total de rutinas por entrenador
+CREATE OR REPLACE VIEW vw_entrenadores_rutinas AS
+SELECT e.nombre entrenador, COUNT(r.id_rutina) total_rutinas
+FROM Entrenadores e LEFT JOIN Rutinas r ON e.id_entrenador=r.id_entrenador
+GROUP BY e.nombre;
+/
+
+-- Vista que une clientes y membresías contratadas
+CREATE OR REPLACE VIEW vw_membresias_clientes AS
+SELECT DISTINCT c.nombre, m.tipo
+FROM Pagos p JOIN Clientes c ON c.id_cliente=p.id_cliente
+JOIN Membresias m ON m.id_membresia=p.id_membresia;
+/
+
+-- Vista resumen de pagos agrupados por mes
+CREATE OR REPLACE VIEW vw_pagos_por_mes AS
+SELECT TO_CHAR(fecha_pago,'YYYY-MM') AS mes, SUM(monto) total_mes
+FROM Pagos GROUP BY TO_CHAR(fecha_pago,'YYYY-MM');
+/
+
+-- Vista que lista clientes activos con su último pago
+CREATE OR REPLACE VIEW vw_clientes_activos AS
+SELECT c.id_cliente, c.nombre, c.correo, MAX(p.fecha_pago) ultima_fecha
+FROM Clientes c JOIN Pagos p ON c.id_cliente=p.id_cliente
+GROUP BY c.id_cliente, c.nombre, c.correo;
+/
+
+-- Vista que muestra detalle de cada rutina
+CREATE OR REPLACE VIEW vw_rutinas_detalle AS
+SELECT r.id_rutina, c.nombre cliente, e.nombre entrenador, r.descripcion
+FROM Rutinas r JOIN Clientes c ON c.id_cliente=r.id_cliente
+JOIN Entrenadores e ON e.id_entrenador=r.id_entrenador;
+/
+
+-- Vista que agrupa usuarios por rol
+CREATE OR REPLACE VIEW vw_usuarios_roles AS
+SELECT rol, COUNT(*) total FROM Usuarios GROUP BY rol;
+/
+
+-- Vista de detalle de pagos con cliente y membresía
+CREATE OR REPLACE VIEW vw_pagos_detalle AS
+SELECT p.id_pago, c.nombre cliente, m.tipo membresia, p.monto, p.fecha_pago
+FROM Pagos p JOIN Clientes c ON p.id_cliente=c.id_cliente
+JOIN Membresias m ON m.id_membresia=p.id_membresia;
+/
+
 -- ======================================================
 -- 7. TRIGGERS
 -- ======================================================
 
+-- Automatizan acciones cuando ocurren eventos en las tablas.
+-- Ejemplos: auditoría, validaciones y registros automáticos.
+
+
+-- Registra un evento en Log_Pagos cada vez que se inserta un pago.
 CREATE OR REPLACE TRIGGER tr_log_pago
 AFTER INSERT ON Pagos
 FOR EACH ROW
@@ -204,10 +270,65 @@ BEGIN
 END;
 /
 
+-- Auditoría de Clientes (crea, actualiza o elimina)
+CREATE OR REPLACE TRIGGER tr_aud_clientes
+AFTER INSERT OR UPDATE OR DELETE ON Clientes
+FOR EACH ROW
+DECLARE
+  v_desc VARCHAR2(100);
+  v_id   NUMBER;
+BEGIN
+  v_id := NVL(:NEW.id_cliente, :OLD.id_cliente);
+
+  IF INSERTING THEN
+    v_desc := 'Cliente creado';
+  ELSIF UPDATING THEN
+    v_desc := 'Cliente actualizado';
+  ELSIF DELETING THEN
+    v_desc := 'Cliente eliminado';
+  END IF;
+
+  INSERT INTO Log_Pagos(id_cliente, fecha_evento, descripcion)
+  VALUES (v_id, SYSDATE, v_desc);
+END;
+/
+
+
+-- Valida que el costo de una membresía siempre sea positivo
+CREATE OR REPLACE TRIGGER tr_valida_costo_membresia
+BEFORE INSERT OR UPDATE ON Membresias
+FOR EACH ROW
+BEGIN
+  IF :NEW.costo <= 0 THEN
+    RAISE_APPLICATION_ERROR(-20002,'El costo debe ser positivo.');
+  END IF;
+END;
+/
+
+-- Muestra mensaje al asignar una rutina a un cliente
+CREATE OR REPLACE TRIGGER tr_aud_rutinas
+AFTER INSERT ON Rutinas
+FOR EACH ROW
+BEGIN
+  DBMS_OUTPUT.PUT_LINE('Rutina asignada al cliente '||:NEW.id_cliente);
+END;
+/
+
+-- Auditoría al crear un nuevo usuario
+CREATE OR REPLACE TRIGGER tr_aud_usuarios
+AFTER INSERT ON Usuarios
+FOR EACH ROW
+BEGIN
+  INSERT INTO Log_Pagos(id_cliente, fecha_evento, descripcion)
+  VALUES (NULL, SYSDATE, 'Usuario creado: '||:NEW.nombre_usuario);
+END;
+/
+
 -- ======================================================
 -- 8. PAQUETE PRINCIPAL
 -- ======================================================
-
+-- Agrupa procedimientos y funciones relacionados con Pagos.
+-- Permite llamarlos desde aplicaciones o PL/SQL de forma modular.
 CREATE OR REPLACE PACKAGE pkg_gym AS
   PROCEDURE registrar_pago(p_id_cliente NUMBER, p_id_membresia NUMBER, p_monto NUMBER);
   FUNCTION obtener_total_pagos(p_id_cliente NUMBER) RETURN NUMBER;
@@ -251,6 +372,132 @@ BEGIN
 END;
 /
 
+-- Clientes sin pagos (cursor explícito)
+CREATE OR REPLACE PROCEDURE sp_clientes_sin_pagos_cursor IS
+  CURSOR c1 IS
+    SELECT c.id_cliente, c.nombre, c.apellido
+    FROM Clientes c
+    WHERE NOT EXISTS (SELECT 1 FROM Pagos p WHERE p.id_cliente=c.id_cliente);
+  v_reg c1%ROWTYPE;
+BEGIN
+  OPEN c1;
+  LOOP
+    FETCH c1 INTO v_reg;
+    EXIT WHEN c1%NOTFOUND;
+    DBMS_OUTPUT.PUT_LINE('Sin pagos: '||v_reg.id_cliente||' - '||v_reg.nombre||' '||v_reg.apellido);
+  END LOOP;
+  CLOSE c1;
+END;
+/
+
+-- Top 5 clientes por monto pagado
+CREATE OR REPLACE PROCEDURE sp_top_clientes_cursor IS
+  CURSOR c2 IS
+    SELECT c.nombre, SUM(p.monto) total
+    FROM Clientes c JOIN Pagos p ON c.id_cliente=p.id_cliente
+    GROUP BY c.nombre ORDER BY total DESC FETCH FIRST 5 ROWS ONLY;
+  v_reg c2%ROWTYPE;
+BEGIN
+  OPEN c2;
+  LOOP
+    FETCH c2 INTO v_reg;
+    EXIT WHEN c2%NOTFOUND;
+    DBMS_OUTPUT.PUT_LINE('Top: '||v_reg.nombre||' -> '||v_reg.total);
+  END LOOP;
+  CLOSE c2;
+END;
+/
+
+-- Pagos por mes (cursor explícito)
+CREATE OR REPLACE PROCEDURE sp_pagos_por_mes_cursor(p_mes VARCHAR2) IS
+  CURSOR c3 IS
+    SELECT id_pago, monto, fecha_pago
+    FROM Pagos
+    WHERE TO_CHAR(fecha_pago,'MM-YYYY') = p_mes
+    ORDER BY fecha_pago;
+  v_reg c3%ROWTYPE;
+BEGIN
+  OPEN c3;
+  LOOP
+    FETCH c3 INTO v_reg;
+    EXIT WHEN c3%NOTFOUND;
+    DBMS_OUTPUT.PUT_LINE('Pago '||v_reg.id_pago||' '||v_reg.fecha_pago||' -> '||v_reg.monto);
+  END LOOP;
+  CLOSE c3;
+END;
+/
+
+-- Entrenadores con más rutinas
+CREATE OR REPLACE PROCEDURE sp_entrenadores_top_cursor IS
+  CURSOR c4 IS
+    SELECT e.nombre, COUNT(r.id_rutina) total
+    FROM Entrenadores e LEFT JOIN Rutinas r ON e.id_entrenador=r.id_entrenador
+    GROUP BY e.nombre ORDER BY total DESC;
+  v_reg c4%ROWTYPE;
+BEGIN
+  OPEN c4;
+  LOOP
+    FETCH c4 INTO v_reg;
+    EXIT WHEN c4%NOTFOUND;
+    DBMS_OUTPUT.PUT_LINE('Entrenador: '||v_reg.nombre||' -> '||v_reg.total||' rutinas');
+  END LOOP;
+  CLOSE c4;
+END;
+/
+
+-- Rutinas por entrenador (parametrizable)
+CREATE OR REPLACE PROCEDURE sp_rutinas_por_entrenador_cursor(p_id_entrenador NUMBER) IS
+  CURSOR c5 IS
+    SELECT r.id_rutina, r.descripcion, r.duracion_dias
+    FROM Rutinas r WHERE r.id_entrenador=p_id_entrenador;
+  v_reg c5%ROWTYPE;
+BEGIN
+  OPEN c5;
+  LOOP
+    FETCH c5 INTO v_reg;
+    EXIT WHEN c5%NOTFOUND;
+    DBMS_OUTPUT.PUT_LINE('Rutina '||v_reg.id_rutina||' - '||v_reg.descripcion||' ('||v_reg.duracion_dias||' días)');
+  END LOOP;
+  CLOSE c5;
+END;
+/
+
+-- Clientes activos (tienen al menos un pago)
+CREATE OR REPLACE PROCEDURE sp_clientes_activos_cursor IS
+  CURSOR c6 IS
+    SELECT DISTINCT c.id_cliente, c.nombre
+    FROM Clientes c JOIN Pagos p ON c.id_cliente=p.id_cliente;
+  v_reg c6%ROWTYPE;
+BEGIN
+  OPEN c6;
+  LOOP
+    FETCH c6 INTO v_reg;
+    EXIT WHEN c6%NOTFOUND;
+    DBMS_OUTPUT.PUT_LINE('Cliente activo: '||v_reg.id_cliente||' - '||v_reg.nombre);
+  END LOOP;
+  CLOSE c6;
+END;
+/
+
+-- Pagos detalle con join (cursor explícito adicional)
+CREATE OR REPLACE PROCEDURE sp_pagos_detalle_cursor IS
+  CURSOR c7 IS
+    SELECT p.id_pago, c.nombre cliente, m.tipo membresia, p.monto
+    FROM Pagos p JOIN Clientes c ON p.id_cliente=c.id_cliente
+                 JOIN Membresias m ON p.id_membresia=m.id_membresia;
+  v_reg c7%ROWTYPE;
+BEGIN
+  OPEN c7;
+  LOOP
+    FETCH c7 INTO v_reg;
+    EXIT WHEN c7%NOTFOUND;
+    DBMS_OUTPUT.PUT_LINE('Pago '||v_reg.id_pago||' - '||v_reg.cliente||' - '||v_reg.membresia||' - '||v_reg.monto);
+  END LOOP;
+  CLOSE c7;
+END;
+/
+
+
 -- ======================================================
 -- 10. EJEMPLOS DE USO
 -- ======================================================
@@ -262,9 +509,16 @@ BEGIN
 END;
 /
 
---Lista todos los procedmientos, funciones, paquetes, vistas y triggers en dos columnas
-SELECT object_name AS "NOMBRE",
-       object_type AS "TIPO"
+SELECT table_name FROM user_tables;
+
+--Consultas de verificacion
+SELECT object_type, COUNT(*) total
+FROM user_objects
+WHERE object_type IN ('PROCEDURE','FUNCTION','PACKAGE','PACKAGE BODY','VIEW','TRIGGER')
+GROUP BY object_type
+ORDER BY object_type;
+
+SELECT object_name AS "NOMBRE", object_type AS "TIPO"
 FROM user_objects
 WHERE object_type IN ('PROCEDURE', 'FUNCTION', 'PACKAGE', 'PACKAGE BODY', 'VIEW', 'TRIGGER')
 ORDER BY object_type, object_name;
